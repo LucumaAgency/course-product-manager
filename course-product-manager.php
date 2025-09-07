@@ -27,16 +27,23 @@ class CourseProductManager {
     }
     
     private function __construct() {
-        add_action('init', [$this, 'init']);
+        add_action('init', [$this, 'init'], 20); // Changed priority to 20 to run after other plugins
         add_action('admin_menu', [$this, 'add_admin_menu']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_admin_scripts']);
         add_action('wp_ajax_cpm_save_relationship', [$this, 'ajax_save_relationship']);
         add_action('wp_ajax_cpm_delete_relationship', [$this, 'ajax_delete_relationship']);
         add_action('wp_ajax_cpm_get_products', [$this, 'ajax_get_products']);
         add_action('wp_ajax_cpm_get_relationship_details', [$this, 'ajax_get_relationship_details']);
+        
+        // Check dependencies on admin_init for more reliable detection
+        add_action('admin_init', [$this, 'check_dependencies']);
     }
     
     public function init() {
+        // Initialize any necessary components here
+    }
+    
+    public function check_dependencies() {
         if (!class_exists('WooCommerce')) {
             add_action('admin_notices', function() {
                 ?>
