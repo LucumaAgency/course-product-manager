@@ -37,6 +37,11 @@ class CourseProductManager {
         
         // Check dependencies on admin_init for more reliable detection
         add_action('admin_init', [$this, 'check_dependencies']);
+        
+        // WooCommerce hooks for automatic course enrollment
+        add_action('woocommerce_order_status_completed', [$this, 'enroll_user_to_course']);
+        add_action('woocommerce_order_status_processing', [$this, 'enroll_user_to_course']);
+        add_action('woocommerce_payment_complete', [$this, 'enroll_user_to_course']);
     }
     
     public function init() {
@@ -604,6 +609,112 @@ class CourseProductManager {
         }
         
         wp_send_json_success($details);
+    }
+    
+    /**
+     * Enroll user to course when order is completed or payment is processed
+     */
+    public function enroll_user_to_course($order_id) {
+        $order = wc_get_order($order_id);
+        if (!$order) {
+            return;
+        }
+        
+        $user_id = $order->get_user_id();
+        if (!$user_id) {
+            return;
+        }
+        
+        // Process each item in the order
+        foreach ($order->get_items() as $item) {
+            $product_id = $item->get_product_id();
+            
+            // Check if this product is linked to a course
+            $course_id = get_post_meta($product_id, 'related_stm_course_id', true);
+            
+            if ($course_id) {
+                // Check if MasterStudy functions exist
+                if (class_exists('STM_LMS_Course')) {
+                    // MasterStudy LMS Pro method
+                    STM_LMS_Course::add_user_course($course_id, $user_id, 0, 0);
+                    STM_LMS_Course::add_student($course_id);
+                } elseif (function_exists('stm_lms_add_user_course')) {
+                    // MasterStudy LMS Free method
+                    stm_lms_add_user_course(array(
+                        'user_id' => $user_id,
+                        'course_id' => $course_id,
+                        'current_lesson_id' => 0,
+                        'progress_percent' => 0,
+                        'status' => 'enrolled',
+                        'start_time' => time()
+                    ));
+                } else {
+                    // Fallback method using direct database insertion
+                    $this->enroll_user_fallback($user_id, $course_id);
+                }
+                
+                // Log enrollment for debugging
+                $this->log_enrollment($user_id, $course_id, $product_id, $order_id);
+            }
+        }
+    }
+    
+    /**
+     * Fallback enrollment method if MasterStudy functions are not available
+     */
+    private function enroll_user_fallback($user_id, $course_id) {
+        global $wpdb;
+        
+        // Check if user is already enrolled
+        $table_name = $wpdb->prefix . 'stm_lms_user_courses';
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT user_course_id FROM {$table_name} WHERE user_id = %d AND course_id = %d",
+            $user_id,
+            $course_id
+        ));
+        
+        if (!$existing) {
+            // Enroll the user
+            $wpdb->insert(
+                $table_name,
+                array(
+                    'user_id' => $user_id,
+                    'course_id' => $course_id,
+                    'current_lesson_id' => 0,
+                    'progress_percent' => 0,
+                    'status' => 'enrolled',
+                    'start_time' => current_time('mysql')
+                ),
+                array('%d', '%d', '%d', '%d', '%s', '%s')
+            );
+            
+            // Update course students count
+            $students = get_post_meta($course_id, 'current_students', true);
+            $students = empty($students) ? 1 : intval($students) + 1;
+            update_post_meta($course_id, 'current_students', $students);
+        }
+    }
+    
+    /**
+     * Log enrollment for debugging purposes
+     */
+    private function log_enrollment($user_id, $course_id, $product_id, $order_id) {
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log(sprintf(
+                'CPM Enrollment: User %d enrolled in course %d via product %d (Order: %d)',
+                $user_id,
+                $course_id,
+                $product_id,
+                $order_id
+            ));
+        }
+        
+        // Store enrollment meta for tracking
+        add_user_meta($user_id, 'cpm_enrollment_' . $course_id, array(
+            'order_id' => $order_id,
+            'product_id' => $product_id,
+            'enrollment_date' => current_time('mysql')
+        ));
     }
 }
 
